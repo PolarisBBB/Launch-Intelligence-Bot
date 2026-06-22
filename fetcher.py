@@ -28,6 +28,9 @@ def _extract_coords(text):
         r'\d{1,2}-\d{2}[NS]\s+\d{1,3}-\d{2}[EW]',
         r'[NS]\d{2,3}[-]\d{2}(?:\.\d+)?\s+[EW]\d{2,3}[-]\d{2}(?:\.\d+)?',
         r'\d+\.\d+[NS]\s+\d+\.\d+[EW]',
+        r'\d{4}[NS][/\s]?\d{5}[EW]',
+        r'\d{4}[NS]\d{5}[EW]',
+        r'\d{1,3}\.\d+[NS]\s+\d{1,3}\.\d+[EW]',
     ]
     coords = []
     for pat in patterns:
@@ -82,7 +85,6 @@ def _parse_warnings_text(text, source_name):
 def fetch_faa_notams():
     results = []
 
-    # SIGMET — международные воздушные предупреждения (без регистрации)
     try:
         resp = requests.get(
             "https://aviationweather.gov/api/data/airsigmet",
@@ -94,15 +96,23 @@ def fetch_faa_notams():
             data = resp.json()
             logger.info(f"SIGMET: получено {len(data)} записей")
             for item in data:
-                text = item.get("rawAirSigmet", "") or item.get("data", "") or str(item)
+                text = item.get("rawAirSigmet", "") or str(item)
                 if not text:
                     continue
+
                 coords = _extract_coords(text)
+
                 if not coords:
                     area = item.get("area", [])
-                    coords = [f"{p.get('lat','')}/{p.get('lon','')}" for p in area if p.get('lat')]
+                    coords = [
+                        f"{p.get('lat','')}/{p.get('lon','')}"
+                        for p in area if p.get('lat') and p.get('lon')
+                    ]
+
                 if not coords:
+                    logger.info(f"SIGMET без координат, текст: {text[:300]}")
                     continue
+
                 results.append({
                     "id": item.get("airSigmetId", "N/A"),
                     "text": text[:600],
