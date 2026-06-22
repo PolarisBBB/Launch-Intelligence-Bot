@@ -1,12 +1,12 @@
 import re
 import logging
+import os
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# Keywords that indicate launch reservations
 LAUNCH_KEYWORDS = [
     "rocket", "launch", "missile", "space", "spacecraft", "NASA",
     "SpaceX", "ULA", "Rocket Lab", "range", "NOTAM", "TEMPORARY",
@@ -17,25 +17,21 @@ FAA_NOTAM_URL = "https://external-api.faa.gov/notamapi/v1/notams"
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID", "")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET", "")
 
-# NAVAREA warnings RSS/XML feeds (public)
 NAVAREA_FEEDS = {
-    "NAVAREA I":    "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_I&output=xml",
-    "NAVAREA II":   "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_II&output=xml",
-    "NAVAREA III":  "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_III&output=xml",
-    "NAVAREA IV":   "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_IV&output=xml",
-    "NAVAREA XII":  "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_XII&output=xml",
-]
-
-import os
+    "NAVAREA I":   "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_I&output=xml",
+    "NAVAREA II":  "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_II&output=xml",
+    "NAVAREA III": "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_III&output=xml",
+    "NAVAREA IV":  "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_IV&output=xml",
+    "NAVAREA XII": "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_XII&output=xml",
+}
 
 
-def _is_launch_related(text: str) -> bool:
+def _is_launch_related(text):
     text_lower = text.lower()
     return any(kw.lower() in text_lower for kw in LAUNCH_KEYWORDS)
 
 
-def _extract_coords_from_text(text: str) -> list[str]:
-    """Extract coordinate patterns like N28-27.5 W080-31.7 or 28.45N 080.52W"""
+def _extract_coords_from_text(text):
     patterns = [
         r'[NS]\d{2,3}[-°]\d{2}(?:\.\d+)?(?:[-°]\d{2}(?:\.\d+)?)?\s+[EW]\d{2,3}[-°]\d{2}(?:\.\d+)?(?:[-°]\d{2}(?:\.\d+)?)?',
         r'\d{2,3}[-°]\d{2}(?:\.\d+)?[NS]\s+\d{2,3}[-°]\d{2}(?:\.\d+)?[EW]',
@@ -46,13 +42,12 @@ def _extract_coords_from_text(text: str) -> list[str]:
     for pat in patterns:
         found = re.findall(pat, text, re.IGNORECASE)
         coords.extend(found)
-    return list(dict.fromkeys(coords))  # deduplicate, preserve order
+    return list(dict.fromkeys(coords))
 
 
-def _extract_time_window(text: str) -> str:
-    """Extract time window from NOTAM/NAVAREA text."""
+def _extract_time_window(text):
     patterns = [
-        r'(\d{10})\s*/\s*(\d{10})',                         # 2501010000/2501012359
+        r'(\d{10})\s*/\s*(\d{10})',
         r'(\d{2}/\d{4})\s*UTC?\s*TO\s*(\d{2}/\d{4})\s*UTC?',
         r'(\d{4}Z)\s*(?:TO|UNTIL|-)\s*(\d{4}Z)',
         r'EFFECTIVE\s+([\d\s\w:/-]+?)\s+UNTIL\s+([\d\s\w:/-]+?)(?:\.|$)',
@@ -61,12 +56,11 @@ def _extract_time_window(text: str) -> str:
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return f"{m.group(1)} → {m.group(2)}"
+            return f"{m.group(1)} -> {m.group(2)}"
     return "Не указано"
 
 
-def _extract_area_name(text: str) -> str:
-    """Try to extract the name/location of the reservation."""
+def _extract_area_name(text):
     m = re.search(r'([A-Z][A-Z0-9 \-]{3,40}(?:RANGE|LAUNCH|AREA|ZONE|POLYGON|CORRIDOR|SECTOR))', text)
     if m:
         return m.group(1).strip()
@@ -76,12 +70,10 @@ def _extract_area_name(text: str) -> str:
     return "Не указано"
 
 
-def fetch_faa_notams() -> list[dict]:
-    """Fetch active launch-related NOTAMs from FAA API."""
+def fetch_faa_notams():
     results = []
     headers = {"Accept": "application/json"}
 
-    # If API keys provided, use authenticated endpoint
     if FAA_CLIENT_ID and FAA_CLIENT_SECRET:
         headers["client_id"] = FAA_CLIENT_ID
         headers["client_secret"] = FAA_CLIENT_SECRET
@@ -99,7 +91,7 @@ def fetch_faa_notams() -> list[dict]:
         data = resp.json()
         items = data.get("items", [])
     except Exception as e:
-        logger.warning(f"FAA API failed, trying fallback: {e}")
+        logger.warning(f"FAA API failed: {e}")
         return _fetch_faa_fallback()
 
     for item in items:
@@ -110,11 +102,9 @@ def fetch_faa_notams() -> list[dict]:
             continue
         if not _is_launch_related(text):
             continue
-
         coords = _extract_coords_from_text(text)
         if not coords:
-            continue  # skip if no coordinates
-
+            continue
         results.append({
             "id": core.get("id", "N/A"),
             "text": text,
@@ -127,10 +117,8 @@ def fetch_faa_notams() -> list[dict]:
     return results
 
 
-def _fetch_faa_fallback() -> list[dict]:
-    """Fallback: fetch NOTAMs from SkyVector/ADDS public feed."""
+def _fetch_faa_fallback():
     results = []
-    # FAA public NOTAM search (no auth needed)
     url = "https://www.notams.faa.gov/dinsQueryWeb/queryRetrievalMapAction.do"
     params = {
         "reportType": "Raw",
@@ -147,8 +135,9 @@ def _fetch_faa_fallback() -> list[dict]:
             coords = _extract_coords_from_text(block)
             if not coords:
                 continue
+            id_match = re.search(r'!([\w\d]+)', block)
             results.append({
-                "id": re.search(r'!([\w\d]+)', block).group(1) if re.search(r'!([\w\d]+)', block) else "N/A",
+                "id": id_match.group(1) if id_match else "N/A",
                 "text": block[:800],
                 "coords": coords,
                 "time_window": _extract_time_window(block),
@@ -160,8 +149,7 @@ def _fetch_faa_fallback() -> list[dict]:
     return results
 
 
-def fetch_navarea_warnings() -> list[dict]:
-    """Fetch active NAVAREA broadcast warnings from NGA MSI."""
+def fetch_navarea_warnings():
     results = []
 
     for area_name, url in NAVAREA_FEEDS.items():
@@ -169,9 +157,6 @@ def fetch_navarea_warnings() -> list[dict]:
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
             root = ET.fromstring(resp.content)
-
-            # NGA MSI XML structure
-            ns = {"": ""}
             items = root.findall(".//{*}broadcastWarn") or root.findall(".//item") or root.findall(".//warn")
 
             for item in items:
@@ -182,16 +167,11 @@ def fetch_navarea_warnings() -> list[dict]:
                 text = get_text("text") or get_text("description") or get_text("detail") or ET.tostring(item, encoding="unicode")
                 if not text:
                     continue
-
-                if not _is_launch_related(text):
-                    # Still include NAVAREA items with coordinates (they're always relevant)
-                    pass
-
                 coords = _extract_coords_from_text(text)
                 if not coords:
                     continue
 
-                number = get_text("msgYear") + "/" + get_text("msgNumber") if get_text("msgNumber") else get_text("number") or "N/A"
+                number = get_text("msgYear") + "/" + get_text("msgNumber") if get_text("msgNumber") else "N/A"
                 subregion = get_text("subregion") or get_text("area") or area_name
 
                 results.append({
@@ -199,26 +179,27 @@ def fetch_navarea_warnings() -> list[dict]:
                     "text": text[:800],
                     "coords": coords,
                     "time_window": _extract_time_window(text),
-                    "area_name": subregion or area_name,
+                    "area_name": subregion,
                     "source": f"NAVAREA ({area_name})",
                 })
 
         except ET.ParseError:
-            # Try JSON fallback for NGA MSI
-            results.extend(_fetch_navarea_json(area_name, url.replace("output=xml", "output=json")))
+            results.extend(_fetch_navarea_json(area_name))
         except Exception as e:
-            logger.error(f"NAVAREA {area_name} fetch error: {e}")
+            logger.error(f"NAVAREA {area_name} error: {e}")
 
     return results
 
 
-def _fetch_navarea_json(area_name: str, url: str) -> list[dict]:
+def _fetch_navarea_json(area_name):
     results = []
     try:
-        url_json = url.replace("navArea=", "navArea=").replace("output=xml", "")
-        base = "https://msi.nga.mil/api/publications/broadcast-warn"
         nav_key = area_name.replace("NAVAREA ", "NAVAREA_")
-        resp = requests.get(base, params={"status": "active", "navArea": nav_key}, timeout=15)
+        resp = requests.get(
+            "https://msi.nga.mil/api/publications/broadcast-warn",
+            params={"status": "active", "navArea": nav_key},
+            timeout=15
+        )
         data = resp.json()
         items = data if isinstance(data, list) else data.get("broadcastWarn", [])
         for item in items:
