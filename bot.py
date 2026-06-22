@@ -22,29 +22,24 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 
 async def send_reservations(bot: Bot):
-    """Fetch and send all active reservations to Telegram."""
     logger.info("Fetching reservations...")
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
 
     messages = []
 
-    # FAA NOTAMs (air)
     try:
         notams = fetch_faa_notams()
         for notam in notams:
-            messages.append(format_reservation(notam, "air"))
+            messages.append(format_reservation(notam, notam.get("type", "air")))
     except Exception as e:
         logger.error(f"FAA fetch error: {e}")
-        messages.append(f"⚠️ Ошибка получения FAA NOTAM: {e}")
 
-    # NAVAREA (sea)
     try:
         navareas = fetch_navarea_warnings()
         for nav in navareas:
-            messages.append(format_reservation(nav, "sea"))
+            messages.append(format_reservation(nav, nav.get("type", "sea")))
     except Exception as e:
         logger.error(f"NAVAREA fetch error: {e}")
-        messages.append(f"⚠️ Ошибка получения NAVAREA: {e}")
 
     if not messages:
         await bot.send_message(
