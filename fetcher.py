@@ -3,17 +3,9 @@ import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-LAUNCH_KEYWORDS = [
-    "rocket", "launch", "missile", "space", "spacecraft", "NASA",
-    "SpaceX", "ULA", "Rocket Lab", "range", "NOTAM", "TEMPORARY",
-    "WARNING", "CAUTION", "PARACHUTE", "JATO", "UAV", "UAS"
-]
-
-FAA_NOTAM_URL = "https://external-api.faa.gov/notamapi/v1/notams"
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID", "")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET", "")
 
@@ -24,11 +16,6 @@ NAVAREA_FEEDS = {
     "NAVAREA IV":  "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_IV&output=xml",
     "NAVAREA XII": "https://msi.nga.mil/api/publications/broadcast-warn?status=active&navArea=NAVAREA_XII&output=xml",
 }
-
-
-def _is_launch_related(text):
-    text_lower = text.lower()
-    return any(kw.lower() in text_lower for kw in LAUNCH_KEYWORDS)
 
 
 def _extract_coords_from_text(text):
@@ -48,9 +35,7 @@ def _extract_coords_from_text(text):
 def _extract_time_window(text):
     patterns = [
         r'(\d{10})\s*/\s*(\d{10})',
-        r'(\d{2}/\d{4})\s*UTC?\s*TO\s*(\d{2}/\d{4})\s*UTC?',
         r'(\d{4}Z)\s*(?:TO|UNTIL|-)\s*(\d{4}Z)',
-        r'EFFECTIVE\s+([\d\s\w:/-]+?)\s+UNTIL\s+([\d\s\w:/-]+?)(?:\.|$)',
         r'FROM\s+([\d\s\w:/-]+?)\s+TO\s+([\d\s\w:/-]+?)(?:\.|$)',
     ]
     for pat in patterns:
@@ -64,9 +49,6 @@ def _extract_area_name(text):
     m = re.search(r'([A-Z][A-Z0-9 \-]{3,40}(?:RANGE|LAUNCH|AREA|ZONE|POLYGON|CORRIDOR|SECTOR))', text)
     if m:
         return m.group(1).strip()
-    m = re.search(r'(?:VICINITY OF|NEAR|AROUND)\s+([A-Z][A-Z ,]{3,40})', text)
-    if m:
-        return m.group(1).strip()
     return "Не указано"
 
 
@@ -78,74 +60,42 @@ def fetch_faa_notams():
         headers["client_id"] = FAA_CLIENT_ID
         headers["client_secret"] = FAA_CLIENT_SECRET
 
-    params = {
-        "pageSize": 100,
-        "pageNum": 1,
-        "notamType": "NOTAM",
-        "classification": "INTL",
-    }
+    # Ищем specifically резервации пространства (R, W, P зоны)
+    for notam_type in ["R", "W", "P"]:
+        try:
+            params = {
+                "pageSize": 50,
+                "pageNum": 1,
+                "notamType": notam_type,
+            }
+            resp = requests.get(
+                "https://external-api.faa.gov/notamapi/v1/notams",
+                headers=headers,
+                params=params,
+                timeout=15
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("items", [])
 
-    try:
-        resp = requests.get(FAA_NOTAM_URL, headers=headers, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("items", [])
-    except Exception as e:
-        logger.warning(f"FAA API failed: {e}")
-        return _fetch_faa_fallback()
+            for item in items:
+                props = item.get("properties", {})
+                core = props.get("coreNOTAMData", {}).get("notam", {})
+                text = core.get("fullText", "") or core.get("text", "")
+                if not text:
+                    continue
+                coords = _extract_coords_from_text(text)
+                results.append({
+                    "id": core.get("id", "N/A"),
+                    "text": text[:600],
+                    "coords": coords,
+                    "time_window": _extract_time_window(text),
+                    "area_name": _extract_area_name(text),
+                    "source": f"FAA NOTAM ({notam_type})",
+                })
+        except Exception as e:
+            logger.error(f"FAA NOTAM {notam_type} error: {e}")
 
-    for item in items:
-        props = item.get("properties", {})
-        core = props.get("coreNOTAMData", {}).get("notam", {})
-        text = core.get("fullText", "") or core.get("text", "")
-        if not text:
-            continue
-        if not _is_launch_related(text):
-            continue
-        coords = _extract_coords_from_text(text)
-        if not coords:
-            continue
-        results.append({
-            "id": core.get("id", "N/A"),
-            "text": text,
-            "coords": coords,
-            "time_window": _extract_time_window(text),
-            "area_name": _extract_area_name(text),
-            "source": "FAA NOTAM",
-        })
-
-    return results
-
-
-def _fetch_faa_fallback():
-    results = []
-    url = "https://www.notams.faa.gov/dinsQueryWeb/queryRetrievalMapAction.do"
-    params = {
-        "reportType": "Raw",
-        "retrieveLocId": "ZJX ZMA ZNY ZBW ZOB ZDC ZID ZTL ZME ZLC ZDV ZAB ZLA ZSE ZOA ZHU",
-        "actionType": "notamRetrievalByICAOs",
-    }
-    try:
-        resp = requests.post(url, data=params, timeout=15)
-        text_blocks = re.findall(r'![\w\d /\.\-\n]+?(?=!|\Z)', resp.text, re.DOTALL)
-        for block in text_blocks[:50]:
-            block = block.strip()
-            if not _is_launch_related(block):
-                continue
-            coords = _extract_coords_from_text(block)
-            if not coords:
-                continue
-            id_match = re.search(r'!([\w\d]+)', block)
-            results.append({
-                "id": id_match.group(1) if id_match else "N/A",
-                "text": block[:800],
-                "coords": coords,
-                "time_window": _extract_time_window(block),
-                "area_name": _extract_area_name(block),
-                "source": "FAA NOTAM",
-            })
-    except Exception as e:
-        logger.error(f"FAA fallback failed: {e}")
     return results
 
 
@@ -156,65 +106,49 @@ def fetch_navarea_warnings():
         try:
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
+
+            # Попробуем JSON
+            try:
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("broadcastWarn", [])
+                for item in items:
+                    text = item.get("text", "") or item.get("detail", "")
+                    if not text:
+                        continue
+                    coords = _extract_coords_from_text(text)
+                    results.append({
+                        "id": f"{item.get('msgYear','')}/{item.get('msgNumber','')}",
+                        "text": text[:600],
+                        "coords": coords,
+                        "time_window": _extract_time_window(text),
+                        "area_name": item.get("subregion", area_name),
+                        "source": f"NAVAREA ({area_name})",
+                    })
+                continue
+            except Exception:
+                pass
+
+            # Попробуем XML
             root = ET.fromstring(resp.content)
-            items = root.findall(".//{*}broadcastWarn") or root.findall(".//item") or root.findall(".//warn")
+            items = root.findall(".//{*}broadcastWarn") or root.findall(".//item")
 
             for item in items:
-                def get_text(tag):
+                def get_tag(tag):
                     el = item.find(f".//{tag}")
                     return el.text.strip() if el is not None and el.text else ""
 
-                text = get_text("text") or get_text("description") or get_text("detail") or ET.tostring(item, encoding="unicode")
-                if not text:
-                    continue
+                text = get_tag("text") or get_tag("description") or ET.tostring(item, encoding="unicode")
                 coords = _extract_coords_from_text(text)
-                if not coords:
-                    continue
-
-                number = get_text("msgYear") + "/" + get_text("msgNumber") if get_text("msgNumber") else "N/A"
-                subregion = get_text("subregion") or get_text("area") or area_name
-
                 results.append({
-                    "id": number,
-                    "text": text[:800],
+                    "id": f"{get_tag('msgYear')}/{get_tag('msgNumber')}",
+                    "text": text[:600],
                     "coords": coords,
                     "time_window": _extract_time_window(text),
-                    "area_name": subregion,
+                    "area_name": get_tag("subregion") or area_name,
                     "source": f"NAVAREA ({area_name})",
                 })
 
-        except ET.ParseError:
-            results.extend(_fetch_navarea_json(area_name))
         except Exception as e:
             logger.error(f"NAVAREA {area_name} error: {e}")
 
-    return results
-
-
-def _fetch_navarea_json(area_name):
-    results = []
-    try:
-        nav_key = area_name.replace("NAVAREA ", "NAVAREA_")
-        resp = requests.get(
-            "https://msi.nga.mil/api/publications/broadcast-warn",
-            params={"status": "active", "navArea": nav_key},
-            timeout=15
-        )
-        data = resp.json()
-        items = data if isinstance(data, list) else data.get("broadcastWarn", [])
-        for item in items:
-            text = item.get("text", "") or item.get("detail", "")
-            coords = _extract_coords_from_text(text)
-            if not coords:
-                continue
-            results.append({
-                "id": f"{item.get('msgYear','')}/{item.get('msgNumber','')}",
-                "text": text[:800],
-                "coords": coords,
-                "time_window": _extract_time_window(text),
-                "area_name": item.get("subregion", area_name),
-                "source": f"NAVAREA ({area_name})",
-            })
-    except Exception as e:
-        logger.error(f"NAVAREA JSON fallback {area_name}: {e}")
     return results
