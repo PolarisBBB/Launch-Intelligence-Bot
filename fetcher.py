@@ -92,8 +92,51 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-    # FAA требует платный API ключ — пропускаем
-    return []
+    results = []
+
+    # Публичный API aviationweather.gov — без регистрации
+    url = "https://aviationweather.gov/api/data/notam"
+    params = {
+        "format": "json",
+        "type": "W",      # W = Warning/Restricted airspace
+        "bbox": "-180,-90,180,90",  # весь мир
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info(f"FAA NOTAM: получено {len(data)} записей")
+
+        for item in data:
+            text = item.get("raw", "") or item.get("text", "")
+            if not text:
+                continue
+            if not _is_relevant(text):
+                continue
+
+            coords = _extract_coords(text)
+            if not coords:
+                continue
+
+            # Временное окно
+            start = item.get("startTime", "")
+            end = item.get("endTime", "")
+            time_window = f"{start} -> {end}" if start and end else _extract_time_window(text)
+
+            results.append({
+                "id": item.get("notamID", "N/A"),
+                "text": text[:600],
+                "coords": coords,
+                "time_window": time_window,
+                "area_name": item.get("location", "N/A"),
+                "source": "FAA NOTAM",
+            })
+
+    except Exception as e:
+        logger.error(f"FAA NOTAM ошибка: {e}")
+
+    return results
 
 
 def fetch_navarea_warnings():
