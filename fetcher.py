@@ -10,16 +10,29 @@ NAVAREA_URLS = {
     "HYDROPAC":    "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemPAC.txt",
 }
 
+# Только реальные резервации пространства
 LAUNCH_KEYWORDS = [
-    "rocket", "launch", "missile", "hazardous operations",
-    "firing", "range", "space", "NASA", "SpaceX", "PMRF",
-    "rocket launching", "weapons", "exercise", "cable operations"
+    "rocket", "missile", "hazardous operations",
+    "rocket launching", "missile firing", "weapons firing",
+    "space launch", "NASA", "SpaceX", "PMRF",
+    "firing operations", "rocket launch",
+]
+
+# Слова которые указывают на ВОЗДУШНУЮ резервацию
+AIR_KEYWORDS = [
+    "aircraft", "airspace", "altitude", "flight level",
+    "FL", "feet", "FT MSL", "above", "air navigation"
 ]
 
 
 def _is_relevant(text):
     text_lower = text.lower()
     return any(kw.lower() in text_lower for kw in LAUNCH_KEYWORDS)
+
+
+def _is_air_reservation(text):
+    text_lower = text.lower()
+    return any(kw.lower() in text_lower for kw in AIR_KEYWORDS)
 
 
 def _extract_coords(text):
@@ -29,7 +42,6 @@ def _extract_coords(text):
         r'[NS]\d{2,3}[-]\d{2}(?:\.\d+)?\s+[EW]\d{2,3}[-]\d{2}(?:\.\d+)?',
         r'\d+\.\d+[NS]\s+\d+\.\d+[EW]',
         r'\d{4}[NS][/\s]?\d{5}[EW]',
-        r'\d{4}[NS]\d{5}[EW]',
         r'\d{1,3}\.\d+[NS]\s+\d{1,3}\.\d+[EW]',
     ]
     coords = []
@@ -71,6 +83,13 @@ def _parse_warnings_text(text, source_name):
             continue
         id_match = re.search(r'((?:NAVAREA|HYDRO\w+)\s+[\w/]+)', block)
         warn_id = id_match.group(1) if id_match else "N/A"
+
+        # Определяем тип резервации
+        if _is_air_reservation(block):
+            res_type = "air"
+        else:
+            res_type = "sea"
+
         results.append({
             "id": warn_id,
             "text": block[:600],
@@ -78,55 +97,13 @@ def _parse_warnings_text(text, source_name):
             "time_window": _extract_time_window(block),
             "area_name": source_name,
             "source": f"NAVAREA ({source_name})",
+            "type": res_type,
         })
     return results
 
 
 def fetch_faa_notams():
-    results = []
-
-    try:
-        resp = requests.get(
-            "https://aviationweather.gov/api/data/airsigmet",
-            params={"format": "json", "type": "SIGMET"},
-            timeout=20,
-            headers={"User-Agent": "TelegramNotamBot/1.0"}
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            logger.info(f"SIGMET: получено {len(data)} записей")
-            for item in data:
-                text = item.get("rawAirSigmet", "") or str(item)
-                if not text:
-                    continue
-
-                coords = _extract_coords(text)
-
-                if not coords:
-                    area = item.get("area", [])
-                    coords = [
-                        f"{p.get('lat','')}/{p.get('lon','')}"
-                        for p in area if p.get('lat') and p.get('lon')
-                    ]
-
-                if not coords:
-                    logger.info(f"SIGMET без координат, текст: {text[:300]}")
-                    continue
-
-                results.append({
-                    "id": item.get("airSigmetId", "N/A"),
-                    "text": text[:600],
-                    "coords": coords,
-                    "time_window": f"{item.get('validTimeFrom', '')} -> {item.get('validTimeTo', '')}",
-                    "area_name": item.get("region", "SIGMET"),
-                    "source": "SIGMET (воздушная)",
-                })
-        else:
-            logger.warning(f"SIGMET статус: {resp.status_code}")
-    except Exception as e:
-        logger.error(f"SIGMET ошибка: {e}")
-
-    return results
+    return []
 
 
 def fetch_navarea_warnings():
