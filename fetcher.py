@@ -91,50 +91,109 @@ def _parse_warnings_text(text, source_name):
     return results
 
 
+# Добавь в NAVAREA_URLS в начале файла эти два источника:
+AIR_URLS = {
+    "NAVAREA IV (Air)":  "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemIV.txt",
+    "NAVAREA XII (Air)": "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemXII.txt",
+    "HYDROLANT (Air)":   "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemLant.txt",
+    "HYDROPAC (Air)":    "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemPAC.txt",
+}
+
+AIR_KEYWORDS = [
+    "rocket", "launch", "missile", "hazardous operations",
+    "firing", "space", "NASA", "SpaceX", "aircraft", "airspace",
+    "flight", "TFR", "temporary flight restriction", "altitude",
+    "NOTAM", "FDC", "warning area", "restricted area"
+]
+
 def fetch_faa_notams():
     results = []
 
-    # Публичный API aviationweather.gov — без регистрации
-    url = "https://aviationweather.gov/api/data/notam"
-    params = {
-        "format": "json",
-        "type": "W",      # W = Warning/Restricted airspace
-        "bbox": "-180,-90,180,90",  # весь мир
-    }
-
+    # Источник 1: FAA TFR публичный XML (без регистрации)
     try:
-        resp = requests.get(url, params=params, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        logger.info(f"FAA NOTAM: получено {len(data)} записей")
+        import xml.etree.ElementTree as ET
+        resp = requests.get("https://tfr.faa.gov/tfr2/list.jsp", timeout=20,
+                           headers={"User-Agent": "Mozilla/5.0"})
+        # Ищем ссылки на TFR
+        tfr_ids = re.findall(r'save_pages/detail_(\d+_\d+)\.htm', resp.text)
+        logger.info(f"FAA TFR: найдено {len(tfr_ids)} TFR")
 
-        for item in data:
-            text = item.get("raw", "") or item.get("text", "")
-            if not text:
-                continue
-            if not _is_relevant(text):
-                continue
+        for tfr_id in tfr_ids[:20]:
+            try:
+                xml_url = f"https://tfr.faa.gov/save_pages/detail_{tfr_id}.xml"
+                r2 = requests.get(xml_url, timeout=10,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+                root = ET.fromstring(r2.content)
 
-            coords = _extract_coords(text)
-            if not coords:
-                continue
+                # Извлекаем текст
+                text_parts = []
+                for el in root.iter():
+                    if el.text and el.text.strip():
+                        text_parts.append(el.text.strip())
+                text = " ".join(text_parts)[:800]
 
-            # Временное окно
-            start = item.get("startTime", "")
-            end = item.get("endTime", "")
-            time_window = f"{start} -> {end}" if start and end else _extract_time_window(text)
+                coords = _extract_coords(text)
+                if not coords:
+                    # Пробуем найти координаты в XML атрибутах
+                    for el in root.iter():
+                        lat = el.get("Lat") or el.get("lat")
+                        lon = el.get("Lon") or el.get("lon")
+                        if lat and lon:
+                            coords.append(f"{lat}N {lon}W")
 
-            results.append({
-                "id": item.get("notamID", "N/A"),
-                "text": text[:600],
-                "coords": coords,
-                "time_window": time_window,
-                "area_name": item.get("location", "N/A"),
-                "source": "FAA NOTAM",
-            })
+                if not coords:
+                    continue
+
+                # Тип TFR
+                tfr_type = ""
+                for el in root.iter():
+                    if "type" in (el.tag or "").lower() or "reason" in (el.tag or "").lower():
+                        if el.text:
+                            tfr_type = el.text.strip()
+                            break
+
+                results.append({
+                    "id": tfr_id,
+                    "text": text[:600],
+                    "coords": coords,
+                    "time_window": _extract_time_window(text),
+                    "area_name": tfr_type or "TFR",
+                    "source": "FAA TFR",
+                })
+            except Exception as e:
+                logger.debug(f"TFR {tfr_id} ошибка: {e}")
 
     except Exception as e:
-        logger.error(f"FAA NOTAM ошибка: {e}")
+        logger.error(f"FAA TFR список ошибка: {e}")
+
+    # Источник 2: aviationweather.gov NOTAM API
+    try:
+        resp = requests.get(
+            "https://aviationweather.gov/api/data/notam",
+            params={"format": "json", "type": "W"},
+            timeout=20,
+            headers={"User-Agent": "TelegramNotamBot/1.0"}
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            logger.info(f"aviationweather NOTAM: получено {len(data)} записей")
+            for item in data:
+                text = item.get("raw", "") or ""
+                if not any(kw.lower() in text.lower() for kw in AIR_KEYWORDS):
+                    continue
+                coords = _extract_coords(text)
+                if not coords:
+                    continue
+                results.append({
+                    "id": item.get("notamID", "N/A"),
+                    "text": text[:600],
+                    "coords": coords,
+                    "time_window": _extract_time_window(text),
+                    "area_name": item.get("location", "N/A"),
+                    "source": "FAA NOTAM",
+                })
+    except Exception as e:
+        logger.error(f"aviationweather NOTAM ошибка: {e}")
 
     return results
 
