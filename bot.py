@@ -49,14 +49,12 @@ async def send_reservations(bot: Bot):
         )
         return
 
-    # Шапка — одно отдельное сообщение
     await bot.send_message(
         chat_id=CHAT_ID,
         text=f"🛰 *Резервации воздушного и морского пространства*\n🕐 {now}",
         parse_mode="Markdown"
     )
 
-    # Каждая резервация — отдельное сообщение
     for msg in messages:
         try:
             await bot.send_message(
@@ -65,41 +63,31 @@ async def send_reservations(bot: Bot):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")
+            logger.error(f"Ошибка отправки: {e}")
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот для мониторинга резерваций воздушного и морского пространства.\n\n"
-        "📡 Доступные команды:\n"
-        "/check — получить актуальные резервации прямо сейчас\n"
-        "/help — помощь\n\n"
-        "⏰ Автоматические обновления приходят каждый час."
+        "👋 Привет! Я бот для мониторинга резерваций.\n\n"
+        "/check — получить резервации сейчас\n"
+        "/help — помощь"
     )
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Получаю данные, подождите...")
+    await update.message.reply_text("🔄 Получаю данные...")
     await send_reservations(context.bot)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ℹ️ *Справка по боту*\n\n"
-        "Бот отслеживает:\n"
-        "✈️ *FAA NOTAM* — воздушные резервации (NASA, SpaceX, военные и др.)\n"
-        "🌊 *NAVAREA* — морские резервации (ракетные пуски, учения)\n\n"
-        "Каждое уведомление содержит:\n"
-        "• Тип резервации (воздушная / морская)\n"
-        "• Временное окно запуска\n"
-        "• Полигон / зона запуска\n"
-        "• Координаты для копирования\n\n"
-        "Обновления — каждый час автоматически.",
-        parse_mode="Markdown"
+        "✈️ FAA TFR — воздушные резервации\n"
+        "🌊 NAVAREA/HYDROPAC — морские резервации\n\n"
+        "Обновления каждый час автоматически."
     )
 
 
-def main():
+async def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
@@ -117,8 +105,8 @@ def main():
     scheduler.start()
 
     logger.info("Bot started.")
-    app.run_polling()
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
