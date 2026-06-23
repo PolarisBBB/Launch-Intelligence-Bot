@@ -49,18 +49,23 @@ async def send_reservations(bot: Bot):
         )
         return
 
-    header = f"🛰 *Резервации воздушного и морского пространства*\n🕐 {now}\n\n"
-    chunk = header
+    # Шапка — одно отдельное сообщение
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"🛰 *Резервации воздушного и морского пространства*\n🕐 {now}",
+        parse_mode="Markdown"
+    )
 
+    # Каждая резервация — отдельное сообщение
     for msg in messages:
-        if len(chunk) + len(msg) > 4000:
-            await bot.send_message(chat_id=CHAT_ID, text=chunk, parse_mode="Markdown")
-            chunk = msg
-        else:
-            chunk += msg + "\n"
-
-    if chunk:
-        await bot.send_message(chat_id=CHAT_ID, text=chunk, parse_mode="Markdown")
+        try:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=msg,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения: {e}")
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
