@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -18,42 +19,62 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# Хранит ID резерваций которые уже отправляли
+sent_ids = set()
 
-async def send_reservations(bot: Bot):
+
+async def send_reservations(bot: Bot, daily=False):
     logger.info("Fetching reservations...")
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
-    messages = []
+
+    all_items = []
     try:
-        notams = fetch_faa_notams()
-        for notam in notams:
-            messages.append(format_reservation(notam, notam.get("type", "air")))
+        all_items.extend(fetch_faa_notams())
     except Exception as e:
-        logger.error(f"FAA fetch error: {e}")
+        logger.error(f"FAA error: {e}")
     try:
-        navareas = fetch_navarea_warnings()
-        for nav in navareas:
-            messages.append(format_reservation(nav, nav.get("type", "sea")))
+        all_items.extend(fetch_navarea_warnings())
     except Exception as e:
-        logger.error(f"NAVAREA fetch error: {e}")
-    if not messages:
+        logger.error(f"NAVAREA error: {e}")
+
+    if daily:
+        # В 03:00 МСК — присылаем все актуальные
+        to_send = all_items
+        sent_ids.clear()
+    else:
+        # Каждый час — только новые
+        to_send = [x for x in all_items if x.get("id") not in sent_ids]
+
+    if not to_send:
+        if daily:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"🛰 *Доброе утро! Резерваций на {now} не найдено.*",
+                parse_mode="Markdown"
+            )
+        return
+
+    if daily:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text=f"🕐 *{now}*\n\nАктивных резерваций не найдено.",
+            text=f"🛰 *Ежедневная сводка резерваций*\n🕐 {now}",
             parse_mode="Markdown"
         )
-        return
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=f"🛰 *Резервации воздушного и морского пространства*\n🕐 {now}",
-        parse_mode="Markdown"
-    )
-    for msg in messages:
+    else:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"🆕 *Новые резервации*\n🕐 {now}",
+            parse_mode="Markdown"
+        )
+
+    for item in to_send:
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=msg,
+                text=format_reservation(item, item.get("type", "sea")),
                 parse_mode="Markdown"
             )
+            sent_ids.add(item.get("id"))
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
 
@@ -66,12 +87,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Получаю данные...")
-    await send_reservations(context.bot)
+    await send_reservations(context.bot, daily=True)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✈️ FAA TFR — воздушные\n🌊 NAVAREA/HYDROPAC — морские\n\nОбновления каждый час."
+        "🌊 NAVAREA/HYDROPAC/HYDROLANT — морские резервации\n"
+        "✈️ FAA TFR — воздушные резервации\n\n"
+        "📅 Ежедневная сводка в 03:00 МСК\n"
+        "🔄 Новые резервации — каждый час"
     )
 
 
@@ -80,14 +104,24 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("check", cmd_check))
     app.add_handler(CommandHandler("help", cmd_help))
-    scheduler = AsyncIOScheduler()
+
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+
+    # Ежедневно в 03:00 МСК — полная сводка
+    scheduler.add_job(
+        send_reservations,
+        CronTrigger(hour=3, minute=0, timezone="Europe/Moscow"),
+        args=[app.bot, True]
+    )
+
+    # Каждый час — только новые
     scheduler.add_job(
         send_reservations,
         "interval",
         hours=1,
-        args=[app.bot],
-        next_run_time=datetime.now(timezone.utc)
+        args=[app.bot, False]
     )
+
     scheduler.start()
     logger.info("Bot started.")
     app.run_polling(drop_pending_updates=True)
