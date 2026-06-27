@@ -6,18 +6,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Публичные тайловые серверы (без блокировки)
-TILE_SERVERS = [
-    'https://tile.opentopomap.org/{z}/{x}/{y}.png',
-    'https://tiles.wmflabs.org/osm/{z}/{x}/{y}.png',
-    'https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
-]
-
 
 def _coord_to_decimal(coord_str: str):
     coord_str = coord_str.strip()
 
-    # Формат: 37-43.61N 075-12.62W
     m = re.match(
         r'(\d{1,3})-(\d{2})\.?(\d*)\s*([NS])\s+(\d{1,3})-(\d{2})\.?(\d*)\s*([EW])',
         coord_str, re.IGNORECASE
@@ -31,7 +23,6 @@ def _coord_to_decimal(coord_str: str):
             lon = -lon
         return lat, lon
 
-    # Формат: 24.30N 066.42E
     m2 = re.match(
         r'(\d{1,3}\.\d+)\s*([NS])\s+(\d{1,3}\.\d+)\s*([EW])',
         coord_str, re.IGNORECASE
@@ -62,13 +53,18 @@ def generate_map(reservation: dict) -> bytes | None:
     if not points:
         return None
 
-    # Пробуем разные тайловые серверы
+    TILE_SERVERS = [
+        'https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
+        'https://cartodb-basemaps-b.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
+        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+    ]
+
     for tile_url in TILE_SERVERS:
         try:
             m = StaticMap(
                 800, 600,
                 url_template=tile_url,
-                headers={"User-Agent": "TelegramNotamBot/1.0 (educational project)"}
+                headers={"User-Agent": "Mozilla/5.0 NotamBot/1.0"}
             )
 
             polygon_coords = [(p[1], p[0]) for p in points]
@@ -90,29 +86,23 @@ def generate_map(reservation: dict) -> bytes | None:
 
             image = m.render()
 
-            # Проверяем что карта не заблокирована (не серая/белая)
-            img_array = list(image.getdata())
-            unique_colors = len(set(img_array[:100]))
-            if unique_colors < 3:
-                logger.warning(f"Тайлы заблокированы: {tile_url}")
-                continue
-
-            # Подпись сверху
+            # Подпись — только ASCII символы чтобы не было ошибки кодировки
             draw = ImageDraw.Draw(image)
-            source = reservation.get("source", "")
-            res_id = reservation.get("id", "")
-            time_window = reservation.get("time_window", "")
+            source = reservation.get("source", "").encode('ascii', 'ignore').decode()
+            res_id = reservation.get("id", "").encode('ascii', 'ignore').decode()
+            time_window = reservation.get("time_window", "").encode('ascii', 'ignore').decode()
 
-            draw.rectangle([0, 0, 800, 28], fill=(0, 0, 0))
-            draw.text((8, 6), f"🗺 {source} | {res_id}", fill="white")
+            draw.rectangle([0, 0, 800, 28], fill=(20, 20, 20))
+            draw.text((8, 6), f"{source} | {res_id}", fill=(255, 255, 255))
 
-            if time_window and time_window != "Не указано":
-                draw.rectangle([0, 572, 800, 600], fill=(0, 0, 0))
-                draw.text((8, 578), f"⏱ {time_window}", fill="white")
+            if time_window and time_window != "":
+                draw.rectangle([0, 572, 800, 600], fill=(20, 20, 20))
+                draw.text((8, 578), f"Window: {time_window}", fill=(255, 255, 255))
 
             buf = io.BytesIO()
             image.save(buf, format='PNG')
             buf.seek(0)
+            logger.info(f"Карта сгенерирована: {source} {res_id}")
             return buf.read()
 
         except Exception as e:
