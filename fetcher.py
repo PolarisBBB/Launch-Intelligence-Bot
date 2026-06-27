@@ -1,7 +1,6 @@
 import re
 import logging
 import requests
-import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -9,6 +8,7 @@ NAVAREA_URLS = {
     "NAVAREA IV":  "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemIV.txt",
     "NAVAREA XII": "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemXII.txt",
     "HYDROPAC":    "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemPAC.txt",
+    "HYDROLANT":   "https://msi.nga.mil/api/publications/download?type=view&key=16694640%2FSFH00000%2FDailyMemLant.txt",
 }
 
 LAUNCH_KEYWORDS = [
@@ -23,9 +23,17 @@ AIR_KEYWORDS = [
     "FL", "feet", "FT MSL", "air navigation"
 ]
 
+CHILE_KEYWORDS = [
+    "chile", "chilean", "valparaiso", "santiago"
+]
+
 
 def _is_relevant(text):
     return any(kw.lower() in text.lower() for kw in LAUNCH_KEYWORDS)
+
+
+def _is_chile(text):
+    return any(kw.lower() in text.lower() for kw in CHILE_KEYWORDS)
 
 
 def _is_air_reservation(text):
@@ -60,81 +68,19 @@ def _extract_time_window(text):
     return "Не указано"
 
 
-def fetch_faa_notams():
-    results = []
-    headers = {"User-Agent": "TelegramNotamBot/1.0"}
-
-    # Получаем список всех активных TFR
-    try:
-        resp = requests.get("https://tfr.faa.gov/tfr2/list.jsp", headers=headers, timeout=20)
-        tfr_ids = re.findall(r'detail_(\d+_\d+)\.htm', resp.text)
-        tfr_ids = list(dict.fromkeys(tfr_ids))  # убираем дубли
-        logger.info(f"FAA TFR: найдено {len(tfr_ids)} TFR")
-
-        for tfr_id in tfr_ids[:30]:
-            try:
-                xml_url = f"https://tfr.faa.gov/save_pages/detail_{tfr_id}.xml"
-                r2 = requests.get(xml_url, headers=headers, timeout=10)
-                if r2.status_code != 200:
-                    continue
-
-                root = ET.fromstring(r2.content)
-
-                # Собираем весь текст из XML
-                all_text = " ".join(
-                    el.text.strip()
-                    for el in root.iter()
-                    if el.text and el.text.strip()
-                )
-
-                # Фильтруем только запуски
-                if not _is_relevant(all_text):
-                    continue
-
-                # Координаты из текста
-                coords = _extract_coords(all_text)
-
-                # Если нет — берём из атрибутов XML
-                if not coords:
-                    for el in root.iter():
-                        lat = el.get("Lat") or el.get("lat")
-                        lon = el.get("Lon") or el.get("lon")
-                        if lat and lon:
-                            coords.append(f"{lat}N {abs(float(lon))}W" if float(lon) < 0 else f"{lat}N {lon}E")
-
-                if not coords:
-                    continue
-
-                # Время
-                begin = root.find(".//{*}dateEffective") or root.find(".//dateEffective")
-                end = root.find(".//{*}dateExpire") or root.find(".//dateExpire")
-                time_window = f"{begin.text if begin is not None else '?'} -> {end.text if end is not None else '?'}"
-
-                # Причина / описание
-                reason = root.find(".//{*}notamText") or root.find(".//notamText")
-                text = reason.text[:600] if reason is not None else all_text[:600]
-
-                # Локация
-                loc = root.find(".//{*}locationName") or root.find(".//locationName")
-                area_name = loc.text if loc is not None else tfr_id
-
-                results.append({
-                    "id": f"TFR {tfr_id}",
-                    "text": text,
-                    "coords": coords,
-                    "time_window": time_window,
-                    "area_name": area_name,
-                    "source": "FAA TFR",
-                    "type": "air",
-                })
-
-            except Exception as e:
-                logger.debug(f"TFR {tfr_id} ошибка: {e}")
-
-    except Exception as e:
-        logger.error(f"FAA TFR список ошибка: {e}")
-
-    return results
+def _extract_published_time(text):
+    """Извлекаем дату/время публикации резервации (первая строка блока)."""
+    m = re.search(r'(\d{6}Z\s+\w{3}\s+\d{2})', text)
+    if m:
+        raw = m.group(1)
+        # Формат: 210220Z JUN 26 -> 26 JUN 2026 02:20Z
+        parts = raw.split()
+        if len(parts) == 3:
+            time_part = parts[0][:4]  # 0220
+            day = parts[2]
+            month = parts[1]
+            return f"{day} {month} {time_part}Z"
+    return "Не указано"
 
 
 def _parse_warnings_text(text, source_name):
@@ -149,6 +95,8 @@ def _parse_warnings_text(text, source_name):
             continue
         if not _is_relevant(block):
             continue
+        if _is_chile(block):
+            continue
         coords = _extract_coords(block)
         if not coords:
             continue
@@ -157,14 +105,19 @@ def _parse_warnings_text(text, source_name):
         res_type = "air" if _is_air_reservation(block) else "sea"
         results.append({
             "id": warn_id,
-            "text": block[:600],
+            "text": block[:800],
             "coords": coords,
             "time_window": _extract_time_window(block),
+            "published": _extract_published_time(block),
             "area_name": source_name,
-            "source": f"NAVAREA ({source_name})",
+            "source": source_name,
             "type": res_type,
         })
     return results
+
+
+def fetch_faa_notams():
+    return []
 
 
 def fetch_navarea_warnings():
