@@ -7,7 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from fetcher import fetch_faa_notams, fetch_navarea_warnings
+from fetcher import fetch_faa_notams, fetch_navarea_warnings, fetch_upcoming_launches, find_matching_launch
 from formatter import format_reservation
 
 logging.basicConfig(
@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Хранит ID резерваций которые уже отправляли
 sent_ids = set()
 
 
@@ -37,22 +36,14 @@ async def send_reservations(bot: Bot, daily=False):
     except Exception as e:
         logger.error(f"NAVAREA error: {e}")
 
+    # Загружаем запуски один раз для всех резерваций
+    launches = fetch_upcoming_launches()
+
     if daily:
-        # В 03:00 МСК — присылаем все актуальные
         to_send = all_items
         sent_ids.clear()
     else:
-        # Каждый час — только новые
         to_send = [x for x in all_items if x.get("id") not in sent_ids]
-
-    if not to_send:
-        if daily:
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"🛰 *Доброе утро! Резерваций на {now} не найдено.*",
-                parse_mode="Markdown"
-            )
-        return
 
     if daily:
         await bot.send_message(
@@ -60,7 +51,16 @@ async def send_reservations(bot: Bot, daily=False):
             text=f"🛰 *Ежедневная сводка резерваций*\n🕐 {now}",
             parse_mode="Markdown"
         )
+        if not to_send:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text="📭 Активных резерваций не найдено.",
+                parse_mode="Markdown"
+            )
+            return
     else:
+        if not to_send:
+            return
         await bot.send_message(
             chat_id=CHAT_ID,
             text=f"🆕 *Новые резервации*\n🕐 {now}",
@@ -69,9 +69,12 @@ async def send_reservations(bot: Bot, daily=False):
 
     for item in to_send:
         try:
+            # Ищем совпадение с запуском
+            launch_match = find_matching_launch(item, launches)
+
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=format_reservation(item, item.get("type", "sea")),
+                text=format_reservation(item, item.get("type", "sea"), launch_match),
                 parse_mode="Markdown"
             )
             sent_ids.add(item.get("id"))
@@ -95,7 +98,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌊 NAVAREA/HYDROPAC/HYDROLANT — морские резервации\n"
         "✈️ FAA TFR — воздушные резервации\n\n"
         "📅 Ежедневная сводка в 03:00 МСК\n"
-        "🔄 Новые резервации — каждый час"
+        "🔄 Новые резервации — каждый час\n"
+        "🚀 Совпадение с запуском — автоматически"
     )
 
 
@@ -107,14 +111,12 @@ def main():
 
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-    # Ежедневно в 03:00 МСК — полная сводка
     scheduler.add_job(
         send_reservations,
         CronTrigger(hour=3, minute=0, timezone="Europe/Moscow"),
         args=[app.bot, True]
     )
 
-    # Каждый час — только новые
     scheduler.add_job(
         send_reservations,
         "interval",
