@@ -2,6 +2,7 @@ import logging
 import os
 import json
 from datetime import datetime, timezone, timedelta
+from map_generator import generate_map
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -177,6 +178,14 @@ async def send_reservations(bot: Bot, daily=False):
                 text=format_reservation(item, item.get("type", "sea"), launch_match),
                 parse_mode="Markdown"
             )
+            # Отправляем карту
+            map_image = generate_map(item)
+            if map_image:
+                await bot.send_photo(
+                    chat_id=CHAT_ID,
+                    photo=map_image,
+                    caption=f"🗺 {item.get('source','')} | {item.get('id','')}"
+                )
             sent_ids.add(item.get("id"))
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
