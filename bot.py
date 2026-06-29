@@ -309,11 +309,12 @@ def main():
         args=[app.bot, True]
     )
     scheduler.add_job(
-        send_reservations,
-        "interval",
-        hours=1,
-        args=[app.bot, False]
-    )
+    send_reservations,
+    "interval",
+    hours=1,
+    args=[app.bot, False],
+    next_run_time=datetime.now(timezone.utc)
+)
     scheduler.start()
 
     logger.info("Bot started.")
