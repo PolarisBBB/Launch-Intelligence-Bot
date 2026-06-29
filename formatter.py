@@ -1,24 +1,21 @@
 def format_reservation(data: dict, res_type: str, launch_match: str = "") -> str:
-    if res_type == "air":
-        type_label = "✈️ Резервация воздушного пространства"
-    else:
-        type_label = "🌊 Резервация морского пространства"
-
     zone = data.get("source", "N/A")
-    time_window = data.get("time_window", "Не указано")
-    published = data.get("published", "Не указано")
+    time_window = data.get("time_window", "")
     text = data.get("text", "").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
 
-    msg = f"{type_label}\n"
+    if res_type == "air":
+        zone_emoji = "✈️"
+    else:
+        zone_emoji = "🌊"
+
+    msg = f"{zone_emoji} *{zone}*\n"
 
     if launch_match:
         msg += f"\n{launch_match}\n\n"
 
-    msg += (
-        f"📍 Зона: {zone}\n"
-        f"🕐 Временное окно: {time_window}\n"
-        f"📅 Опубликовано: {published}\n"
-        f"\n"
-        f"{text}"
-    )
+    if time_window and time_window != "Не указано":
+        msg += f"🕐 Временное окно: `{time_window}`\n"
+
+    msg += f"\n{text}"
+
     return msg
