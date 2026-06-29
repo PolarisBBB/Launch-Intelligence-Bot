@@ -290,8 +290,99 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-    return []
+    """Парсим FAA NOTAM Search — публично, без регистрации."""
+    results = []
+    headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
 
+    locations = [
+        # США
+        "KZJX", "KZMA", "KZAB", "KZLA", "KZSE", "KZAK", "KZWY",
+        # Мексика
+        "MMFR", "MMFO",
+        # Аляска / Тихий океан
+        "PAZA",
+        # Япония
+        "RJJJ",
+        # Корея
+        "RKRR",
+        # Филиппины
+        "RPHI",
+        # Китай
+        "ZBPE", "ZHWH", "ZSHA", "ZPKM", "ZGZU", "ZLHW", "ZJSA", "ZYSH", "ZWUQ",
+        # Индия
+        "VECF", "VOMF",
+        # Шри-Ланка
+        "VCCF",
+        # Бразилия
+        "SBAZ", "SBRE", "SOOO", "SBAO",
+        # Турция
+        "LTAA", "LTTB",
+        # Норвегия
+        "ENOR", "ENOB",
+        # Гонконг
+        "VHHK",
+    ]
+
+    for location in locations:
+        try:
+            resp = requests.post(
+                "https://notams.aim.faa.gov/notamSearch/search",
+                headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "searchType": "0",
+                    "designatorForAccountable": location,
+                    "radiusSearchType": "0",
+                    "latDecimal": "",
+                    "longDecimal": "",
+                    "radius": "100",
+                    "sortColumns": "3 asc",
+                    "sortDirection": "true",
+                    "notamOffset": "0",
+                    "submit": "true",
+                },
+                timeout=15
+            )
+
+            if resp.status_code != 200:
+                logger.warning(f"FAA {location}: статус {resp.status_code}")
+                continue
+
+            data = resp.json()
+            notams = data.get("notamList", [])
+            logger.info(f"FAA {location}: получено {len(notams)} NOTAM")
+
+            for item in notams:
+                text = item.get("traditionalMessageFrom4thWord", "") or item.get("traditionalMessage", "")
+                if not text:
+                    continue
+                if not _is_relevant(text):
+                    continue
+
+                coords = _extract_coords(text)
+                if not coords:
+                    continue
+
+                notam_id = item.get("notamNumber", "N/A")
+                start = item.get("startDate", "")
+                end = item.get("endDate", "")
+                time_window = f"{start} -> {end}" if start and end else _extract_time_window(text)
+
+                results.append({
+                    "id": f"FAA {notam_id}",
+                    "text": text[:800],
+                    "coords": coords,
+                    "time_window": time_window,
+                    "published": item.get("issueDate", ""),
+                    "area_name": location,
+                    "source": f"FAA NOTAM ({location})",
+                    "type": "air",
+                })
+
+        except Exception as e:
+            logger.error(f"FAA NOTAM {location} ошибка: {e}")
+
+    return results
+    
 
 def fetch_navarea_warnings():
     results = []
