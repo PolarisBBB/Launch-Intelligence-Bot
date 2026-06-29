@@ -52,22 +52,24 @@ def clean_archive():
 
 
 def check_changes(new_items: list) -> list:
-    """Проверяем изменения в резервациях — снятие или изменение окна."""
     alerts = []
+    current_ids = {item.get("id") for item in new_items}
 
     # Проверяем снятые резервации
-    current_ids = {item.get("id") for item in new_items}
     for res_id in list(sent_ids):
         if res_id not in current_ids and res_id in archive:
             old = archive[res_id]
             alerts.append({
                 "type": "cancelled",
-                "item": old,
-                "message": f"🚨 *РЕЗЕРВАЦИЯ СНЯТА*\n"
-                           f"📍 Зона: {old.get('source','')}\n"
-                           f"🆔 {res_id}\n"
-                           f"Резервация больше не активна."
+                "message": (
+                    f"🚨 *РЕЗЕРВАЦИЯ СНЯТА*\n"
+                    f"📍 Зона: {old.get('source','')}\n"
+                    f"🆔 `{res_id}`\n"
+                    f"Резервация больше не активна."
+                )
             })
+            # Убираем из sent_ids чтобы не проверять снова
+            sent_ids.discard(res_id)
 
     # Проверяем изменения временного окна
     for item in new_items:
@@ -76,16 +78,20 @@ def check_changes(new_items: list) -> list:
             old_window = archive[res_id].get("time_window", "")
             new_window = item.get("time_window", "")
             if old_window and new_window and old_window != new_window:
+                # Зачёркиваем старое окно через unicode
+                old_struck = "\u0336".join(old_window) + "\u0336"
                 alerts.append({
                     "type": "changed",
                     "item": item,
-                    "message": f"⚠️ *ИЗМЕНЕНИЕ ВРЕМЕННОГО ОКНА*\n"
-                               f"📍 Зона: {item.get('source','')}\n"
-                               f"🆔 {res_id}\n"
-                               f"Было: `{old_window}`\n"
-                               f"Стало: `{new_window}`"
+                    "message": (
+                        f"⚠️ *ИЗМЕНЕНИЕ ВРЕМЕННОГО ОКНА*\n"
+                        f"📍 Зона: {item.get('source','')}\n"
+                        f"🆔 `{res_id}`\n"
+                        f"Было: {old_struck}\n"
+                        f"Стало: `{new_window}`"
+                    )
                 })
-                # Обновляем архив
+                # Обновляем архив — чтобы не присылать повторно
                 archive[res_id]["time_window"] = new_window
 
     return alerts
