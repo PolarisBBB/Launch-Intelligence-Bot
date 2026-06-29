@@ -290,7 +290,6 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-def fetch_faa_notams():
     """Получаем NOTAM через aviationweather.gov — работает без блокировок."""
     results = []
     headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
