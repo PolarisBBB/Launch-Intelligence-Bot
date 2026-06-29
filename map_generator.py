@@ -72,21 +72,19 @@ def generate_map(reservation: dict) -> bytes | None:
             if len(points) >= 3:
                 if polygon_coords[0] != polygon_coords[-1]:
                     polygon_coords.append(polygon_coords[0])
-                polygon = Polygon(polygon_coords, '#FF0000', '#FF000055', simplify=True)
-                m.add_polygon(polygon)
-                line = Line(polygon_coords, '#CC0000', 2)
+                # Только контур — без заливки (fill цвет прозрачный)
+                line = Line(polygon_coords, '#FF0000', 3)
                 m.add_line(line)
             elif len(points) == 2:
                 line = Line(polygon_coords, '#FF0000', 3)
                 m.add_line(line)
 
             for pt in points:
-                marker = CircleMarker((pt[1], pt[0]), '#CC0000', 8)
+                marker = CircleMarker((pt[1], pt[0]), '#CC0000', 6)
                 m.add_marker(marker)
 
             image = m.render()
 
-            # Подпись — только ASCII символы чтобы не было ошибки кодировки
             draw = ImageDraw.Draw(image)
             source = reservation.get("source", "").encode('ascii', 'ignore').decode()
             res_id = reservation.get("id", "").encode('ascii', 'ignore').decode()
@@ -95,7 +93,7 @@ def generate_map(reservation: dict) -> bytes | None:
             draw.rectangle([0, 0, 800, 28], fill=(20, 20, 20))
             draw.text((8, 6), f"{source} | {res_id}", fill=(255, 255, 255))
 
-            if time_window and time_window != "":
+            if time_window:
                 draw.rectangle([0, 572, 800, 600], fill=(20, 20, 20))
                 draw.text((8, 578), f"Window: {time_window}", fill=(255, 255, 255))
 
