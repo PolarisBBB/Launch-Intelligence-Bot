@@ -290,65 +290,73 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
+    """Получаем NOTAM через isitwindy.com по координатам космодромов."""
     results = []
     headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
 
-    stations = [
-        "KTTS", "KXMR", "KVAD", "KNSI", "KNKX",
-        "PHNL", "PHKO", "NZWN", "NZCH",
-        "SBLS", "SBMD", "UUEE", "ULMM",
-        "ZUCK", "ZBAA", "VOBL", "VABB",
-        "LFPG", "SOCA",
+    # Координаты космодромов (lat, lon, название)
+    launch_sites = [
+        (28.39,  -80.60,  "Cape Canaveral"),
+        (34.75, -120.52,  "Vandenberg"),
+        (37.84,  -75.48,  "Wallops"),
+        (22.02, -159.79,  "PMRF Hawaii"),
+        (-39.26, 177.86,  "Mahia NZ"),
+        (5.24,   -52.77,  "Kourou"),
+        (28.52,  -80.65,  "Kennedy"),
+        (19.61,  110.95,  "Wenchang"),
+        (13.73,   80.23,  "Satish Dhawan"),
+        (30.40,  130.97,  "Tanegashima"),
     ]
 
-    for station in stations:
+    for lat, lon, name in launch_sites:
         try:
             resp = requests.get(
-                "https://aviationweather.gov/api/data/notam",
+                "https://isitwindy.com/api/notams",
                 params={
-                    "format": "json",
-                    "icaos": station,
-                    "date": "",
+                    "lat": lat,
+                    "lon": lon,
+                    "radiusNm": 200,
                 },
                 headers=headers,
-                timeout=20
+                timeout=15
             )
 
             if resp.status_code != 200:
-                logger.warning(f"aviationweather {station}: статус {resp.status_code}, ответ: {resp.text[:100]}")
+                logger.warning(f"isitwindy {name}: статус {resp.status_code}")
                 continue
 
             data = resp.json()
-            if not isinstance(data, list):
-                logger.warning(f"aviationweather {station}: неожиданный формат {type(data)}")
-                continue
+            notams = data.get("notams", [])
+            logger.info(f"isitwindy {name}: получено {len(notams)} NOTAM")
 
-            logger.info(f"aviationweather {station}: получено {len(data)} NOTAM")
-
-            for item in data:
-                text = item.get("raw", "") or item.get("text", "")
+            for item in notams:
+                text = item.get("text", "")
                 if not text or not _is_relevant(text):
                     continue
+
                 coords = _extract_coords(text)
                 if not coords:
-                    continue
-                notam_id = item.get("notamID", "N/A")
-                start = item.get("startTime", "")
-                end = item.get("endTime", "")
+                    # Используем координаты космодрома
+                    coords = [f"{abs(lat):.2f}{'N' if lat >= 0 else 'S'} {abs(lon):.2f}{'E' if lon >= 0 else 'W'}"]
+
+                notam_id = item.get("number", item.get("id", "N/A"))
+                start = item.get("effectiveStart", "")
+                end = item.get("effectiveEnd", "")
                 time_window = f"{start} -> {end}" if start and end else _extract_time_window(text)
+
                 results.append({
                     "id": f"NOTAM {notam_id}",
                     "text": text[:800],
                     "coords": coords,
                     "time_window": time_window,
-                    "published": start,
-                    "area_name": station,
-                    "source": f"FAA NOTAM ({station})",
+                    "published": item.get("issued", ""),
+                    "area_name": name,
+                    "source": f"FAA NOTAM ({name})",
                     "type": "air",
                 })
 
         except Exception as e:
-            logger.error(f"aviationweather {station} ошибка: {e}")
+            logger.error(f"isitwindy {name} ошибка: {e}")
 
     return results
     
