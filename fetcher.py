@@ -290,19 +290,15 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-    """Получаем NOTAM через aviationweather.gov — работает без блокировок."""
     results = []
     headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
 
-    # Коды аэропортов/зон рядом с космодромами
     stations = [
-        "KTTS", "KXMR", "KVAD", "KNSI", "KNKX",  # США — космодромы
-        "PHNL", "PHKO",                              # Гавайи — PMRF
-        "NZWN", "NZCH",                              # Новая Зеландия — Rocket Lab
-        "SBLS", "SBMD",                              # Бразилия
-        "ZUCK", "ZBAA",                              # Китай
-        "VOBL", "VABB",                              # Индия
-        "LFPG", "SOCA",                              # Франция/Гвиана — Ariane
+        "KTTS", "KXMR", "KVAD", "KNSI", "KNKX",
+        "PHNL", "PHKO", "NZWN", "NZCH",
+        "SBLS", "SBMD", "UUEE", "ULMM",
+        "ZUCK", "ZBAA", "VOBL", "VABB",
+        "LFPG", "SOCA",
     ]
 
     for station in stations:
@@ -312,37 +308,34 @@ def fetch_faa_notams():
                 params={
                     "format": "json",
                     "icaos": station,
+                    "date": "",
                 },
                 headers=headers,
                 timeout=20
             )
 
             if resp.status_code != 200:
-                logger.warning(f"aviationweather {station}: статус {resp.status_code}")
+                logger.warning(f"aviationweather {station}: статус {resp.status_code}, ответ: {resp.text[:100]}")
                 continue
 
             data = resp.json()
             if not isinstance(data, list):
+                logger.warning(f"aviationweather {station}: неожиданный формат {type(data)}")
                 continue
 
             logger.info(f"aviationweather {station}: получено {len(data)} NOTAM")
 
             for item in data:
                 text = item.get("raw", "") or item.get("text", "")
-                if not text:
+                if not text or not _is_relevant(text):
                     continue
-                if not _is_relevant(text):
-                    continue
-
                 coords = _extract_coords(text)
                 if not coords:
                     continue
-
                 notam_id = item.get("notamID", "N/A")
                 start = item.get("startTime", "")
                 end = item.get("endTime", "")
                 time_window = f"{start} -> {end}" if start and end else _extract_time_window(text)
-
                 results.append({
                     "id": f"NOTAM {notam_id}",
                     "text": text[:800],
