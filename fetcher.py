@@ -279,50 +279,106 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-    """Получаем TFR из публичного XML файла FAA."""
+    """Получаем TFR с tfr.faa.gov — публично, без регистрации."""
+    import xml.etree.ElementTree as ET
     results = []
     headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
 
     try:
-        import xml.etree.ElementTree as ET
-
-        # Публичный XML список всех активных TFR
+        # Получаем список всех активных TFR
         resp = requests.get(
-            "https://tfr.faa.gov/tfr3/download_tfr.zip",
+            "https://tfr.faa.gov/tfr2/list.jsp",
             headers=headers,
             timeout=20
         )
 
         if resp.status_code != 200:
-            # Пробуем альтернативный URL
-            resp = requests.get(
-                "https://tfr.faa.gov/save_pages/TFRList.zip",
-                headers=headers,
-                timeout=20
-            )
-
-        if resp.status_code != 200:
-            logger.warning(f"FAA TFR XML: статус {resp.status_code}")
+            logger.warning(f"FAA TFR list: статус {resp.status_code}")
             return results
 
-        import zipfile
-        import io
+        # Извлекаем ID всех TFR из HTML
+        tfr_ids = re.findall(r'detail_(\d+_\d+)\.htm', resp.text)
+        tfr_ids = list(dict.fromkeys(tfr_ids))
+        logger.info(f"FAA TFR: найдено {len(tfr_ids)} TFR в списке")
 
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-            for name in z.namelist():
-                if name.endswith('.xml'):
-                    with z.open(name) as f:
-                        try:
-                            root = ET.parse(f).getroot()
-                            _parse_tfr_xml(root, results)
-                        except Exception as e:
-                            logger.error(f"TFR XML parse {name}: {e}")
+        for tfr_id in tfr_ids[:50]:
+            try:
+                xml_url = f"https://tfr.faa.gov/save_pages/detail_{tfr_id}.xml"
+                r2 = requests.get(xml_url, headers=headers, timeout=10)
+                if r2.status_code != 200:
+                    continue
 
-        logger.info(f"FAA TFR: найдено {len(results)} резерваций запусков")
+                # Парсим XML
+                root = ET.fromstring(r2.content)
+
+                # Собираем весь текст
+                all_text = ' '.join(
+                    el.text.strip()
+                    for el in root.iter()
+                    if el.text and el.text.strip()
+                )
+
+                if not _is_relevant(all_text):
+                    continue
+                if _is_chile(all_text):
+                    continue
+
+                # Координаты из текста
+                coords = _extract_coords(all_text)
+
+                # Если нет — берём из атрибутов
+                if not coords:
+                    for el in root.iter():
+                        lat = el.get('Lat') or el.get('lat')
+                        lon = el.get('Lon') or el.get('lon')
+                        if lat and lon:
+                            try:
+                                lat_f = float(lat)
+                                lon_f = float(lon)
+                                coords.append(
+                                    f"{abs(lat_f):.4f}{'N' if lat_f >= 0 else 'S'} "
+                                    f"{abs(lon_f):.4f}{'E' if lon_f >= 0 else 'W'}"
+                                )
+                            except Exception:
+                                pass
+
+                if not coords:
+                    continue
+
+                # Время
+                start_el = end_el = None
+                for el in root.iter():
+                    t = el.tag.lower().split('}')[-1]
+                    if t in ('dateeffective', 'startdate'):
+                        start_el = el.text
+                    if t in ('dateexpire', 'enddate'):
+                        end_el = el.text
+
+                time_window = "Не указано"
+                if start_el and end_el:
+                    time_window = f"{start_el} -> {end_el}"
+                else:
+                    time_window = _extract_time_window(all_text)
+
+                results.append({
+                    "id": f"TFR {tfr_id}",
+                    "text": all_text[:800],
+                    "coords": coords,
+                    "time_window": time_window,
+                    "published": start_el or "",
+                    "area_name": "FAA TFR",
+                    "source": "FAA TFR",
+                    "type": "air",
+                })
+                logger.info(f"FAA TFR {tfr_id}: добавлен")
+
+            except Exception as e:
+                logger.debug(f"TFR {tfr_id} ошибка: {e}")
 
     except Exception as e:
         logger.error(f"FAA TFR ошибка: {e}")
 
+    logger.info(f"FAA TFR: итого найдено {len(results)} резерваций запусков")
     return results
 
 
