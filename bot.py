@@ -1,8 +1,6 @@
 import logging
 import os
-import json
 from datetime import datetime, timezone, timedelta
-from map_generator import generate_map
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -11,6 +9,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 from fetcher import fetch_faa_notams, fetch_navarea_warnings, fetch_upcoming_launches, find_matching_launch
 from formatter import format_reservation
+from map_generator import generate_map
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -21,15 +20,14 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Хранилище
 sent_ids = set()
-archive = {}  # id -> dict резервации
+archive = {}
+changed_ids = set()  # ID резерваций у которых уже сообщили об изменении
 
 
 def save_to_archive(item: dict):
-    """Сохраняем резервацию в архив с временной меткой."""
     res_id = item.get("id")
-    if res_id and res_id not in archive:
+    if res_id:
         archive[res_id] = {
             **item,
             "archived_at": datetime.now(timezone.utc).isoformat()
@@ -37,7 +35,6 @@ def save_to_archive(item: dict):
 
 
 def clean_archive():
-    """Удаляем резервации старше 7 дней."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     to_delete = []
     for res_id, item in archive.items():
@@ -55,7 +52,7 @@ def check_changes(new_items: list) -> list:
     alerts = []
     current_ids = {item.get("id") for item in new_items}
 
-    # Проверяем снятые резервации
+    # Снятые резервации
     for res_id in list(sent_ids):
         if res_id not in current_ids and res_id in archive:
             old = archive[res_id]
@@ -68,21 +65,18 @@ def check_changes(new_items: list) -> list:
                     f"Резервация больше не активна."
                 )
             })
-            # Убираем из sent_ids чтобы не проверять снова
             sent_ids.discard(res_id)
 
-    # Проверяем изменения временного окна
+    # Изменение временного окна — только один раз
     for item in new_items:
         res_id = item.get("id")
-        if res_id in archive:
+        if res_id in archive and res_id not in changed_ids:
             old_window = archive[res_id].get("time_window", "")
             new_window = item.get("time_window", "")
             if old_window and new_window and old_window != new_window:
-                # Зачёркиваем старое окно через unicode
                 old_struck = "\u0336".join(old_window) + "\u0336"
                 alerts.append({
                     "type": "changed",
-                    "item": item,
                     "message": (
                         f"⚠️ *ИЗМЕНЕНИЕ ВРЕМЕННОГО ОКНА*\n"
                         f"📍 Зона: {item.get('source','')}\n"
@@ -91,8 +85,8 @@ def check_changes(new_items: list) -> list:
                         f"Стало: `{new_window}`"
                     )
                 })
-                # Обновляем архив — чтобы не присылать повторно
                 archive[res_id]["time_window"] = new_window
+                changed_ids.add(res_id)  # Больше не присылаем
 
     return alerts
 
@@ -114,10 +108,25 @@ def get_main_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
-async def send_reservations(bot: Bot, daily=False):
-    logger.info("Fetching reservations...")
-    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+async def send_item(bot: Bot, item: dict, launches: list):
+    """Отправляем одну резервацию с картой."""
+    launch_match = find_matching_launch(item, launches)
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=format_reservation(item, item.get("type", "sea"), launch_match),
+        parse_mode="Markdown"
+    )
+    map_image = generate_map(item)
+    if map_image:
+        await bot.send_photo(
+            chat_id=CHAT_ID,
+            photo=map_image,
+            caption=f"{item.get('source','')} | {item.get('id','')}"
+        )
 
+
+async def fetch_all_items():
+    """Получаем все актуальные резервации."""
     all_items = []
     try:
         all_items.extend(fetch_faa_notams())
@@ -127,10 +136,17 @@ async def send_reservations(bot: Bot, daily=False):
         all_items.extend(fetch_navarea_warnings())
     except Exception as e:
         logger.error(f"NAVAREA error: {e}")
+    return all_items
 
+
+async def send_reservations(bot: Bot, daily=False):
+    logger.info("Fetching reservations...")
+    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+
+    all_items = await fetch_all_items()
     launches = fetch_upcoming_launches()
 
-    # Проверяем изменения и снятия
+    # Проверяем изменения
     alerts = check_changes(all_items)
     for alert in alerts:
         try:
@@ -142,16 +158,15 @@ async def send_reservations(bot: Bot, daily=False):
         except Exception as e:
             logger.error(f"Ошибка отправки алерта: {e}")
 
+    for item in all_items:
+        save_to_archive(item)
+    clean_archive()
+
     if daily:
         to_send = all_items
         sent_ids.clear()
     else:
         to_send = [x for x in all_items if x.get("id") not in sent_ids]
-
-    # Сохраняем в архив
-    for item in all_items:
-        save_to_archive(item)
-    clean_archive()
 
     if daily:
         await bot.send_message(
@@ -178,53 +193,65 @@ async def send_reservations(bot: Bot, daily=False):
 
     for item in to_send:
         try:
-            launch_match = find_matching_launch(item, launches)
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=format_reservation(item, item.get("type", "sea"), launch_match),
-                parse_mode="Markdown"
-            )
-            # Отправляем карту
-            map_image = generate_map(item)
-            if map_image:
-                await bot.send_photo(
-                    chat_id=CHAT_ID,
-                    photo=map_image,
-                    caption=f"🗺 {item.get('source','')} | {item.get('id','')}"
-                )
+            await send_item(bot, item, launches)
             sent_ids.add(item.get("id"))
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
 
 
-async def cmd_start(update: Update, context):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """При /start сразу показываем актуальные резервации."""
+    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
     await update.message.reply_text(
-        "👋 Привет! Я бот мониторинга резерваций.\n\n"
-        "Выбери что хочешь посмотреть:",
+        f"🛰 *Актуальные резервации*\n🕐 {now}\n\nПолучаю данные...",
+        parse_mode="Markdown",
         reply_markup=get_main_keyboard()
     )
 
+    all_items = await fetch_all_items()
+    launches = fetch_upcoming_launches()
 
-async def cmd_check(update: Update, context):
-    await update.message.reply_text("🔄 Получаю данные...")
-    await send_reservations(context.bot, daily=True)
+    if not all_items:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="📭 Активных резерваций не найдено."
+        )
+        return
+
+    for item in all_items:
+        try:
+            launch_match = find_matching_launch(item, launches)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=format_reservation(item, item.get("type", "sea"), launch_match),
+                parse_mode="Markdown"
+            )
+            map_image = generate_map(item)
+            if map_image:
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=map_image,
+                    caption=f"{item.get('source','')} | {item.get('id','')}"
+                )
+            save_to_archive(item)
+        except Exception as e:
+            logger.error(f"Ошибка /start отправки: {e}")
 
 
-async def cmd_help(update: Update, context):
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌊 Морские — NAVAREA/HYDROPAC/HYDROLANT\n"
-        "✈️ Воздушные — FAA TFR\n\n"
-        "📅 Сводка в 03:00 МСК\n"
+        "🌊 NAVAREA/HYDROPAC/HYDROLANT — морские резервации\n"
+        "✈️ FAA NOTAM — воздушные резервации\n\n"
+        "📅 Ежедневная сводка в 03:00 МСК\n"
         "🔄 Новые резервации — каждый час\n"
-        "🚨 Снятие/изменение — мгновенно\n"
+        "🚨 Снятие/изменение — мгновенно, один раз\n"
         "📂 Архив — последние 7 дней"
     )
 
 
-async def handle_button(update: Update, context):
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     data = query.data
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
 
@@ -239,7 +266,6 @@ async def handle_button(update: Update, context):
         if not items:
             await query.message.reply_text("📂 Архив пуст.")
             return
-
         await query.message.reply_text(
             f"📂 *Архив резерваций за 7 дней*\n🕐 {now}\nВсего: {len(items)}",
             parse_mode="Markdown"
@@ -252,17 +278,17 @@ async def handle_button(update: Update, context):
                     format_reservation(item, item.get("type", "sea"), launch_match),
                     parse_mode="Markdown"
                 )
+                map_image = generate_map(item)
+                if map_image:
+                    await query.message.reply_photo(
+                        photo=map_image,
+                        caption=f"{item.get('source','')} | {item.get('id','')}"
+                    )
             except Exception as e:
-                logger.error(f"Архив ошибка отправки: {e}")
+                logger.error(f"Архив ошибка: {e}")
         return
 
-    # Фильтры
-    all_items = []
-    try:
-        all_items.extend(fetch_faa_notams())
-        all_items.extend(fetch_navarea_warnings())
-    except Exception as e:
-        logger.error(f"Fetch error: {e}")
+    all_items = await fetch_all_items()
 
     if data == "filter_sea":
         items = [x for x in all_items if x.get("type") == "sea"]
@@ -291,14 +317,19 @@ async def handle_button(update: Update, context):
                 format_reservation(item, item.get("type", "sea"), launch_match),
                 parse_mode="Markdown"
             )
+            map_image = generate_map(item)
+            if map_image:
+                await query.message.reply_photo(
+                    photo=map_image,
+                    caption=f"{item.get('source','')} | {item.get('id','')}"
+                )
         except Exception as e:
-            logger.error(f"Ошибка отправки: {e}")
+            logger.error(f"Ошибка кнопки: {e}")
 
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("check", cmd_check))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CallbackQueryHandler(handle_button))
 
@@ -309,12 +340,12 @@ def main():
         args=[app.bot, True]
     )
     scheduler.add_job(
-    send_reservations,
-    "interval",
-    hours=1,
-    args=[app.bot, False],
-    next_run_time=datetime.now(timezone.utc)
-)
+        send_reservations,
+        "interval",
+        hours=1,
+        args=[app.bot, False],
+        next_run_time=datetime.now(timezone.utc)
+    )
     scheduler.start()
 
     logger.info("Bot started.")
