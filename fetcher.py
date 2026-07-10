@@ -19,6 +19,13 @@ LAUNCH_KEYWORDS = [
     "firing operations", "rocket launch",
 ]
 
+EXCLUDE_KEYWORDS = [
+    "space debris",
+    "debris",
+    "cancel",
+    "cancelled",
+]
+
 AIR_KEYWORDS = [
     "aircraft", "airspace", "altitude", "flight level",
     "FL", "feet", "FT MSL", "air navigation"
@@ -46,8 +53,11 @@ LAUNCH_PADS = {
 
 
 def _is_relevant(text):
-    return any(kw.lower() in text.lower() for kw in LAUNCH_KEYWORDS)
-
+    text_lower = text.lower()
+    if any(kw.lower() in text_lower for kw in EXCLUDE_KEYWORDS):
+        return False
+    return any(kw.lower() in text_lower for kw in LAUNCH_KEYWORDS)
+    
 
 def _is_chile(text):
     return any(kw.lower() in text.lower() for kw in CHILE_KEYWORDS)
