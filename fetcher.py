@@ -164,17 +164,10 @@ def fetch_upcoming_launches():
 
 
 def find_matching_launch(reservation: dict, launches: list) -> str:
-    """
-    Ищем запуск который совпадает с резервацией по времени и месту.
-    Возвращает строку с описанием совпадения или пустую строку.
-    """
     coords = reservation.get("coords", [])
     text = reservation.get("text", "")
-
-    # Пробуем извлечь временное окно резервации
     win_start, win_end = _extract_window_dates(text)
 
-    # Конвертируем координаты резервации
     res_points = []
     for c in coords[:3]:
         pt = _coord_to_decimal(c)
@@ -194,19 +187,18 @@ def find_matching_launch(reservation: dict, launches: list) -> str:
         pad_lon = pad.get("longitude")
 
         score = 0
-        reasons = []
+        pad_display = location_name or pad_name or "неизвестная площадка"
 
-        # Проверяем совпадение по времени
+        # Проверяем время
         if net and win_start and win_end:
             try:
                 launch_dt = datetime.fromisoformat(net.replace("Z", "+00:00"))
                 if win_start <= launch_dt <= win_end:
                     score += 3
-                    reasons.append("временное окно совпадает")
             except Exception:
                 pass
 
-        # Проверяем совпадение по месту — через координаты площадки
+        # Проверяем место
         if pad_lat and pad_lon and res_points:
             try:
                 pad_lat_f = float(pad_lat)
@@ -215,21 +207,18 @@ def find_matching_launch(reservation: dict, launches: list) -> str:
                     dist = _distance_km(rp[0], rp[1], pad_lat_f, pad_lon_f)
                     if dist < 200:
                         score += 3
-                        reasons.append(f"площадка в {int(dist)} км от зоны резервации")
                         break
                     elif dist < 500:
                         score += 1
-                        reasons.append(f"площадка в {int(dist)} км от зоны резервации")
                         break
             except Exception:
                 pass
 
-        # Проверяем совпадение по ключевым словам в тексте
-        for pad_key, pad_coords in LAUNCH_PADS.items():
+        # Проверяем ключевые слова
+        for pad_key in LAUNCH_PADS:
             if pad_key.lower() in text.lower():
                 if pad_key.lower() in (pad_name + location_name).lower():
                     score += 2
-                    reasons.append(f"упоминается {pad_key}")
                     break
 
         if score >= 2:
@@ -241,17 +230,17 @@ def find_matching_launch(reservation: dict, launches: list) -> str:
 
             matches.append({
                 "score": score,
-                "text": f"🚀 *Возможный запуск:* {launch_name}\n"
-                        f"   🏢 {provider}\n"
-                        f"   📍 {location_name}\n"
-                        f"   📅 {time_str}\n"
-                        f"   💡 Причина: {', '.join(reasons)}"
+                "text": (
+                    f"🚀 *Возможный запуск:* {launch_name}\n"
+                    f"   🏢 {provider}\n"
+                    f"   📍 Возможно запуск с {pad_display}\n"
+                    f"   📅 {time_str}"
+                )
             })
 
     if not matches:
         return ""
 
-    # Возвращаем лучшее совпадение
     matches.sort(key=lambda x: x["score"], reverse=True)
     return matches[0]["text"]
 
