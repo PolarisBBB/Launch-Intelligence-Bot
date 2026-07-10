@@ -19,14 +19,6 @@ LAUNCH_KEYWORDS = [
     "firing operations", "rocket launch",
 ]
 
-EXCLUDE_KEYWORDS = [
-    "space debris",
-    "reentry of debris",
-    "debris reentry",
-    "cancel this msg",
-    "cancel this message",
-]
-
 AIR_KEYWORDS = [
     "aircraft", "airspace", "altitude", "flight level",
     "FL", "feet", "FT MSL", "air navigation"
