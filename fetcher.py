@@ -46,11 +46,7 @@ LAUNCH_PADS = {
 
 
 def _is_relevant(text):
-    text_lower = text.lower()
-    # Исключаем только точные фразы
-    if any(kw.lower() in text_lower for kw in EXCLUDE_KEYWORDS):
-        return False
-    return any(kw.lower() in text_lower for kw in LAUNCH_KEYWORDS)
+    return any(kw.lower() in text.lower() for kw in LAUNCH_KEYWORDS)
     
 
 def _is_chile(text):
