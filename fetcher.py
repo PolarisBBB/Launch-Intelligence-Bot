@@ -279,106 +279,126 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-    """Получаем TFR с tfr.faa.gov — публично, без регистрации."""
-    import xml.etree.ElementTree as ET
+def fetch_faa_notams():
+    """Получаем воздушные резервации из нескольких источников."""
+    results = []
+    results.extend(_fetch_notamify())
+    results.extend(_fetch_icao_istars())
+    logger.info(f"Воздушные резервации итого: {len(results)}")
+    return results
+
+
+def _fetch_notamify():
+    """Notamify — бесплатный API без регистрации."""
     results = []
     headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
 
-    try:
-        # Получаем список всех активных TFR
-        resp = requests.get(
-            "https://tfr.faa.gov/tfr2/list.jsp",
-            headers=headers,
-            timeout=20
-        )
+    # Коды FIR зон рядом с космодромами
+    fir_codes = [
+        "KZJX",  # Jacksonville — Cape Canaveral
+        "KZLA",  # Los Angeles — Vandenberg
+        "KZAB",  # Albuquerque — Boca Chica
+        "KZHU",  # Houston — Boca Chica
+        "KZHC",  # Honolulu — PMRF
+        "NZZO",  # Auckland — Mahia NZ
+        "SBAZ",  # Amazonica — Brazil
+        "LFEE",  # Reims — Kourou area
+        "SOOO",  # Paramaribo — Kourou
+    ]
 
-        if resp.status_code != 200:
-            logger.warning(f"FAA TFR list: статус {resp.status_code}")
-            return results
+    for fir in fir_codes:
+        try:
+            resp = requests.get(
+                "https://notamify.com/api/v1/notams",
+                params={
+                    "fir": fir,
+                    "active": "true",
+                },
+                headers=headers,
+                timeout=15
+            )
+            if resp.status_code != 200:
+                logger.debug(f"Notamify {fir}: статус {resp.status_code}")
+                continue
 
-        # Извлекаем ID всех TFR из HTML
-        tfr_ids = re.findall(r'detail_(\d+_\d+)\.htm', resp.text)
-        tfr_ids = list(dict.fromkeys(tfr_ids))
-        logger.info(f"FAA TFR: найдено {len(tfr_ids)} TFR в списке")
+            data = resp.json()
+            notams = data.get("notams", data if isinstance(data, list) else [])
+            logger.info(f"Notamify {fir}: получено {len(notams)} NOTAM")
 
-        for tfr_id in tfr_ids[:50]:
-            try:
-                xml_url = f"https://tfr.faa.gov/save_pages/detail_{tfr_id}.xml"
-                r2 = requests.get(xml_url, headers=headers, timeout=10)
-                if r2.status_code != 200:
+            for item in notams:
+                text = item.get("icao_message", "") or item.get("raw", "") or item.get("text", "")
+                if not text or not _is_relevant(text):
                     continue
-
-                # Парсим XML
-                root = ET.fromstring(r2.content)
-
-                # Собираем весь текст
-                all_text = ' '.join(
-                    el.text.strip()
-                    for el in root.iter()
-                    if el.text and el.text.strip()
-                )
-
-                if not _is_relevant(all_text):
-                    continue
-                if _is_chile(all_text):
-                    continue
-
-                # Координаты из текста
-                coords = _extract_coords(all_text)
-
-                # Если нет — берём из атрибутов
-                if not coords:
-                    for el in root.iter():
-                        lat = el.get('Lat') or el.get('lat')
-                        lon = el.get('Lon') or el.get('lon')
-                        if lat and lon:
-                            try:
-                                lat_f = float(lat)
-                                lon_f = float(lon)
-                                coords.append(
-                                    f"{abs(lat_f):.4f}{'N' if lat_f >= 0 else 'S'} "
-                                    f"{abs(lon_f):.4f}{'E' if lon_f >= 0 else 'W'}"
-                                )
-                            except Exception:
-                                pass
-
+                coords = _extract_coords(text)
                 if not coords:
                     continue
-
-                # Время
-                start_el = end_el = None
-                for el in root.iter():
-                    t = el.tag.lower().split('}')[-1]
-                    if t in ('dateeffective', 'startdate'):
-                        start_el = el.text
-                    if t in ('dateexpire', 'enddate'):
-                        end_el = el.text
-
-                time_window = "Не указано"
-                if start_el and end_el:
-                    time_window = f"{start_el} -> {end_el}"
-                else:
-                    time_window = _extract_time_window(all_text)
-
+                notam_id = item.get("id", "N/A")
+                start = item.get("starts_at", "")
+                end = item.get("ends_at", "")
+                time_window = f"{start} -> {end}" if start and end else _extract_time_window(text)
                 results.append({
-                    "id": f"TFR {tfr_id}",
-                    "text": all_text[:800],
+                    "id": f"NOTAM {notam_id[:8]}",
+                    "text": text[:800],
                     "coords": coords,
                     "time_window": time_window,
-                    "published": start_el or "",
-                    "area_name": "FAA TFR",
-                    "source": "FAA TFR",
+                    "published": start,
+                    "area_name": fir,
+                    "source": f"NOTAM ({fir})",
                     "type": "air",
                 })
-                logger.info(f"FAA TFR {tfr_id}: добавлен")
+        except Exception as e:
+            logger.error(f"Notamify {fir} ошибка: {e}")
 
-            except Exception as e:
-                logger.debug(f"TFR {tfr_id} ошибка: {e}")
+    return results
 
-    except Exception as e:
-        logger.error(f"FAA TFR ошибка: {e}")
 
-    logger.info(f"FAA TFR: итого найдено {len(results)} резерваций запусков")
+def _fetch_icao_istars():
+    """ICAO iSTARS — публичный поиск NOTAM по ключевым словам."""
+    results = []
+    headers = {"User-Agent": "Mozilla/5.0 TelegramNotamBot/1.0"}
+
+    keywords = ["ROCKET LAUNCH", "MISSILE FIRING", "SPACE LAUNCH", "HAZARDOUS OPERATIONS"]
+
+    for keyword in keywords:
+        try:
+            resp = requests.get(
+                "https://www.icao.int/safety/iStars/Pages/NOTAM-Search.aspx",
+                params={"q": keyword},
+                headers=headers,
+                timeout=15
+            )
+            if resp.status_code != 200:
+                logger.debug(f"ICAO iSTARS {keyword}: статус {resp.status_code}")
+                continue
+
+            # Ищем NOTAM блоки в HTML
+            import re as _re
+            blocks = _re.findall(
+                r'([A-Z]\d{4}/\d{2}.*?(?=\n[A-Z]\d{4}/\d{2}|\Z))',
+                resp.text, _re.DOTALL
+            )
+            logger.info(f"ICAO iSTARS {keyword}: найдено {len(blocks)} блоков")
+
+            for block in blocks[:10]:
+                block = block.strip()
+                if not _is_relevant(block):
+                    continue
+                coords = _extract_coords(block)
+                if not coords:
+                    continue
+                results.append({
+                    "id": f"ICAO {block[:10]}",
+                    "text": block[:800],
+                    "coords": coords,
+                    "time_window": _extract_time_window(block),
+                    "published": _extract_published_time(block),
+                    "area_name": "ICAO",
+                    "source": "ICAO NOTAM",
+                    "type": "air",
+                })
+        except Exception as e:
+            logger.error(f"ICAO iSTARS {keyword} ошибка: {e}")
+
     return results
 
 
