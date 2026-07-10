@@ -279,7 +279,6 @@ def _parse_warnings_text(text, source_name):
 
 
 def fetch_faa_notams():
-def fetch_faa_notams():
     """Получаем воздушные резервации из нескольких источников."""
     results = []
     results.extend(_fetch_notamify())
