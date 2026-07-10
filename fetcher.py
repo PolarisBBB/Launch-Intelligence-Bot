@@ -21,9 +21,10 @@ LAUNCH_KEYWORDS = [
 
 EXCLUDE_KEYWORDS = [
     "space debris",
-    "debris",
-    "cancel",
-    "cancelled",
+    "reentry of debris",
+    "debris reentry",
+    "cancel this msg",
+    "cancel this message",
 ]
 
 AIR_KEYWORDS = [
@@ -54,6 +55,7 @@ LAUNCH_PADS = {
 
 def _is_relevant(text):
     text_lower = text.lower()
+    # Исключаем только точные фразы
     if any(kw.lower() in text_lower for kw in EXCLUDE_KEYWORDS):
         return False
     return any(kw.lower() in text_lower for kw in LAUNCH_KEYWORDS)
