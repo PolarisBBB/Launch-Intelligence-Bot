@@ -3,6 +3,7 @@ from PIL import Image, ImageDraw
 import re
 import io
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,34 @@ def _coord_to_decimal(coord_str: str):
     return None
 
 
+def _auto_zoom(points: list) -> int:
+    """Автоматически выбираем zoom чтобы вся резервация была видна
+    плюс окружающие страны."""
+    if len(points) < 2:
+        return 5
+
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+
+    lat_span = max(lats) - min(lats)
+    lon_span = max(lons) - min(lons)
+    max_span = max(lat_span, lon_span)
+
+    # Чем больше зона — тем меньше zoom
+    if max_span > 40:
+        return 3
+    elif max_span > 20:
+        return 4
+    elif max_span > 10:
+        return 5
+    elif max_span > 5:
+        return 6
+    elif max_span > 2:
+        return 7
+    else:
+        return 8
+
+
 def generate_map(reservation: dict) -> bytes | None:
     coords = reservation.get("coords", [])
     if not coords:
@@ -52,12 +81,14 @@ def generate_map(reservation: dict) -> bytes | None:
     if not points:
         return None
 
-    # Карта с названиями стран и городов — используем CartoDB с метками
     TILE_SERVERS = [
         'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
         'https://cartodb-basemaps-a.global.ssl.fastly.net/rastertiles/voyager/{z}/{x}/{y}.png',
         'https://cartodb-basemaps-b.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
     ]
+
+    zoom = _auto_zoom(points)
+    logger.info(f"Карта zoom={zoom} для {len(points)} точек")
 
     for tile_url in TILE_SERVERS:
         try:
@@ -72,7 +103,6 @@ def generate_map(reservation: dict) -> bytes | None:
             if len(points) >= 3:
                 if polygon_coords[0] != polygon_coords[-1]:
                     polygon_coords.append(polygon_coords[0])
-                # Только контур — без заливки
                 line = Line(polygon_coords, '#FF0000', 3)
                 m.add_line(line)
             elif len(points) == 2:
@@ -83,9 +113,7 @@ def generate_map(reservation: dict) -> bytes | None:
                 marker = CircleMarker((pt[1], pt[0]), '#CC0000', 8)
                 m.add_marker(marker)
 
-            # Увеличиваем масштаб — zoom будет выбран автоматически по точкам
-            # но добавляем отступ чтобы видны были страны вокруг
-            image = m.render(zoom=7)
+            image = m.render(zoom=zoom)
 
             draw = ImageDraw.Draw(image)
             source = reservation.get("source", "").encode('ascii', 'ignore').decode()
